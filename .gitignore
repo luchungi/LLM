@@ -208,5 +208,5 @@ __marimo__/
 data/tinystories_data.txt
 .vscode/settings.json
 .DS_Store
-data/chunked_stories.npz
-data/tinystories-tokenizer.json
+data/*.npz
+data/*.json

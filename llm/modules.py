@@ -204,3 +204,71 @@ class TransformerEncoder(nn.Module):
         for layer in self.layers:
             x = layer(x, mask)
         return x
+
+class SmallLanguageModel(nn.Module):
+    def __init__(self, vocab_dim: int, embed_dim, n_head, num_layers, max_len=512, mlp_dim=2048):
+        super(SmallLanguageModel, self).__init__()
+        self.vocab_dim = vocab_dim
+        self.embed_dim = embed_dim
+        self.n_head = n_head
+        self.num_layers = num_layers
+        self.mlp_dim = mlp_dim
+        self.max_len = max_len
+
+        # self.softmax = nn.Softmax(axis=-1)
+        # self.transformer_encoder = TransformerEncoder(vocab_dim, embed_dim, n_head, num_layers, max_len, kq_dim, mlp_dim)
+        self.embedding = nn.Embedding(vocab_dim, embed_dim)
+        self.transformer_layer = TransformerEncoder(embed_dim, n_head, num_layers, max_len, mlp_dim)
+        self.output_proj = nn.Sequential(
+            nn.Linear(embed_dim, vocab_dim, bias=False),  # Output projection layer
+            nn.Softmax()  # Softmax to convert logits to probabilities
+        )
+
+    def __call__(self, x, mask: mx.array = None):
+        # x is of shape (batch_size, seq_len)
+        # print(f'Input x.shape: {x.shape}')
+        # Convert input indices to embeddings
+        x = self.embedding(x)  # Shape: (batch_size, seq_len, embed
+        # print(f'After embedding, x.shape: {x.shape}')
+        # Pass through the transformer encoder layer
+        x = self.transformer_layer(x, mask)
+        # print(f'After transformer layer, x.shape: {x.shape}')
+        # Pass through the output projection layer
+        x = self.output_proj(x)  # Shape: (batch_size, seq_len, vocab_dim)
+        # print(f'After output projection, x.shape: {x.shape}')
+        return x
+
+def create_causal_mask_triu(L: int):
+    # Create a boolean matrix where the upper triangle (excluding the diagonal) is True
+    mask = mx.triu(mx.ones((L, L)), k=1).astype(mx.bool_)
+    return mx.where(mask, -1e9, 0.0)[None, None, :, :]  # Add batch and head dimensions
+
+def loss_fn(model: nn.Module, input: mx.array, target: mx.array, pad_token_id: int):
+    """
+    Computes the cross-entropy loss for the model's predictions against the target labels.
+
+    Args:
+        model (nn.Module): The transformer model.
+        input (mx.array): Input sequence of shape (batch_size, seq_len, embed_dim).
+        target (mx.array): Target sequence of shape (batch_size, seq_len).
+        pad_token_id (int): The ID of the padding token.
+
+    Returns:
+        mx.array: The computed loss.
+    """
+    # Create mask to prevent attention to future tokens
+    mask = create_causal_mask_triu(input.shape[1])
+    logits = model(input, mask)
+
+    # Compute the cross-entropy loss including padded tokens
+    loss = nn.losses.cross_entropy(logits, target, reduction='none')
+
+    # Create a padding mask to ignore padded tokens in the loss calculation
+    padding_mask = (target != pad_token_id).astype(mx.float32)
+    # print(loss.shape, padding_mask.shape)  # Debugging: Check shapes of loss and padding_mask
+    # print(f"Padding mask: {padding_mask[:2, :]}")  # Debugging: Check the first sequence's padding mask
+
+    # Apply the padding mask to the loss
+    loss = loss * padding_mask
+
+    return loss.mean()
