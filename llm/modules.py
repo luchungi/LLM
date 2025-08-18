@@ -206,7 +206,7 @@ class TransformerEncoder(nn.Module):
         return x
 
 class SmallLanguageModel(nn.Module):
-    def __init__(self, vocab_dim: int, embed_dim, n_head, num_layers, max_len=512, mlp_dim=2048):
+    def __init__(self, vocab_dim: int, embed_dim: int = 512, n_head: int = 8, num_layers: int = 6, mlp_dim: int = 2048, max_len: int = 512):
         super(SmallLanguageModel, self).__init__()
         self.vocab_dim = vocab_dim
         self.embed_dim = embed_dim
@@ -237,6 +237,16 @@ class SmallLanguageModel(nn.Module):
         x = self.output_proj(x)  # Shape: (batch_size, seq_len, vocab_dim)
         # print(f'After output projection, x.shape: {x.shape}')
         return x
+
+def count_parameters(x):
+    total_params = 0
+    if isinstance(x, dict):
+        for key, value in x.items():
+            if isinstance(value, mx.array):
+                total_params += value.size
+            elif isinstance(value, dict):
+                total_params += count_parameters(value)
+    return total_params
 
 def create_causal_mask_triu(L: int):
     # Create a boolean matrix where the upper triangle (excluding the diagonal) is True
@@ -272,3 +282,34 @@ def loss_fn(model: nn.Module, input: mx.array, target: mx.array, pad_token_id: i
     loss = loss * padding_mask
 
     return loss.mean()
+
+def generate_story(model, tokenizer, prompt, max_length, eos_token_id=None, temp=None):
+    '''
+    Generates a story using the model and tokenizer based on the provided prompt.
+    '''
+    print(f"Generating story with prompt: {prompt}")
+    model.eval()  # Set the model to evaluation mode
+    tokens = tokenizer.encode(prompt).ids
+    input_ids = mx.array(tokens).reshape(1, -1)  # Reshape for batch size of 1
+
+    for i in range(max_length-len(tokens)):
+        mask = create_causal_mask_triu(input_ids.shape[1])
+        logits = model(input_ids, mask)
+        next_token_logits = logits[:, -1, :]  # Get the logits for the last token
+        if temp is None:
+            next_token_id = mx.argmax(next_token_logits, axis=-1).astype(mx.int32)
+        else:
+            next_token_logits = next_token_logits / temp
+            next_token_id = mx.random.categorical(next_token_logits, num_samples=1).astype(mx.int32)[0]
+        # print(f"Next token ID: {next_token_id} with shape {next_token_id.shape}")
+        print(tokenizer.decode(next_token_id.tolist()), end=' ', flush=True)
+        if (i+1) % 50 == 0:
+            print()
+
+        if eos_token_id is not None and next_token_id == eos_token_id:
+            break  # Stop if we hit the eos token
+
+        # print(input_ids.shape, next_token_id.reshape(1, 1).shape)
+        input_ids = mx.concat([input_ids, next_token_id.reshape(1, 1)], axis=1)  # Append the new token
+    print()
+    print('-' * 20)
