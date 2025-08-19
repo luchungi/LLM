@@ -287,7 +287,7 @@ def generate_story(model, tokenizer, prompt, max_length, eos_token_id=None, temp
     '''
     Generates a story using the model and tokenizer based on the provided prompt.
     '''
-    print(f"Generating story with prompt: {prompt}")
+    # print(f"Generating story with prompt: {prompt}")
     model.eval()  # Set the model to evaluation mode
     tokens = tokenizer.encode(prompt).ids
     input_ids = mx.array(tokens).reshape(1, -1)  # Reshape for batch size of 1
@@ -302,14 +302,21 @@ def generate_story(model, tokenizer, prompt, max_length, eos_token_id=None, temp
             next_token_logits = next_token_logits / temp
             next_token_id = mx.random.categorical(next_token_logits, num_samples=1).astype(mx.int32)[0]
         # print(f"Next token ID: {next_token_id} with shape {next_token_id.shape}")
-        print(tokenizer.decode(next_token_id.tolist()), end=' ', flush=True)
-        if (i+1) % 50 == 0:
-            print()
+        # print(tokenizer.decode(next_token_id.tolist()), end='', flush=True)
+        # if (i+1) % 50 == 0:
+        #     print()
 
         if eos_token_id is not None and next_token_id == eos_token_id:
             break  # Stop if we hit the eos token
 
         # print(input_ids.shape, next_token_id.reshape(1, 1).shape)
         input_ids = mx.concat([input_ids, next_token_id.reshape(1, 1)], axis=1)  # Append the new token
-    print()
+    story = tokenizer.decode(input_ids[0].tolist())
+    # print a new line after every 30 words in story
+    words = story.split()
+    for i in range(0, len(words), 30):
+        print(' '.join(words[i:i+30]), end=' ')
+        if (i + 30) % 30 == 0:
+            print()
+    print()  # Print a newline at the end of the story
     print('-' * 20)
