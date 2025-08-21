@@ -210,3 +210,4 @@ data/tinystories_data.txt
 .DS_Store
 data/*.npz
 data/*.json
+data/gpt2_weights/*.npz
