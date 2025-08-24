@@ -135,11 +135,10 @@ class MultiHeadAttention(nn.Module):
         # print(f"Values shape: {values.shape}")  # Should be (batch_size, num_heads, seq_len, head_dim)
         output = (scores @ values).transpose(0, 2, 1, 3)
         # print(f"Output.shape after attention: {output.shape}")  # Should be (batch_size, seq_len, num_heads, head_dim)
+        output = output.reshape(batch_size, seq_len, self.v_dim)
         # print(f"Output before attention reshape: {output[0, :, 0, :]}")  # Print the first head's output for the first batch
-        output = output.reshape(batch_size, seq_len, embed_dim)
         # print(f"Output after attention reshape: {output[0, :, :]}")
         # print(f"Output shape after attention reshape: {output.shape}")
-
         return self.out_proj(output)
 
     def create_causal_mask_triu(self, L: int):
@@ -218,7 +217,7 @@ def count_parameters(x):
                     total_params += count_parameters(item)
     return total_params
 
-def loss_fn(model: nn.Module, input: mx.array, target: mx.array):
+def loss_fn(model: nn.Module, input: mx.array, target: mx.array, pad_token_id: int = None):
     """
     Computes the cross-entropy loss for the model's predictions against the target labels.
 
@@ -240,12 +239,16 @@ def loss_fn(model: nn.Module, input: mx.array, target: mx.array):
     # print(f"Logits shape: {logits.shape}")  # Debugging: Check logits shape
     # print(f"Target shape: {target.shape}")  # Debugging: Check target shape
 
+    if pad_token_id is not None:
+        # Create a mask to ignore padding tokens in the loss calculation
+        loss = nn.losses.cross_entropy(logits, target, reduction='none')
+        mask = (target != pad_token_id)
+        loss = (loss * mask).sum() / mx.sum(mask)
+    else:
     # Compute the cross-entropy loss including padded tokens
-    loss = nn.losses.cross_entropy(logits, target, reduction='mean')
+        loss = nn.losses.cross_entropy(logits, target, reduction='mean')
 
-    loss = loss
-
-    return loss.mean()
+    return loss
 
 def generate_story(model, tokenizer, prompt, max_length, eos_token_id=None, temp=None):
     '''

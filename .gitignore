@@ -208,6 +208,6 @@ __marimo__/
 data/tinystories_data.txt
 .vscode/settings.json
 .DS_Store
-data/*.npz
-data/*.json
-data/gpt2_weights/*.npz
+data/
+runs/
+figures/
