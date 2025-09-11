@@ -1,6 +1,6 @@
 import math
-import mlx.core as mx
-import mlx.nn as nn
+import torch
+import torch.nn as nn
 
 class SinusoidalEmbedding(nn.Module):
     '''
@@ -15,7 +15,7 @@ class SinusoidalEmbedding(nn.Module):
         self.pos_embed = self.create_positional_encoding(max_len, embed_dim)
 
     def __call__(self, x):
-        return self.pos_embed[:, :x.shape[1], :]
+        return self.pos_embed[:, :x.shape[1], :].to(x.device)
 
     def create_positional_encoding(self, seq_len: int, embed_dim: int):
         """
@@ -26,16 +26,16 @@ class SinusoidalEmbedding(nn.Module):
             embed_dim (int): The embedding dimension. Must be even.
 
         Returns:
-            mx.array: The positional encoding tensor.
+            torch.Tensor: The positional encoding tensor.
         """
         if embed_dim % 2 != 0:
             raise ValueError("The embedding dimension embed_dim must be an even number.")
 
         # `pos` represents the position in the sequence.
-        pos = mx.arange(seq_len).reshape(-1, 1) # Shape: (seq_len, 1)
+        pos = torch.arange(seq_len).reshape(-1, 1) # Shape: (seq_len, 1)
 
         # `i` represents the dimension index. We only need embed_dim/2 values because the same frequency is used for each sin/cos pair.
-        div_term_indices = mx.arange(0, embed_dim, 2) # Shape: (embed_dim/2,)
+        div_term_indices = torch.arange(0, embed_dim, 2) # Shape: (embed_dim/2,)
 
         # Calculate the denominator (the inverse frequencies).
         inv_freq = 1.0 / (10000**(div_term_indices / embed_dim)) # Shape: (embed_dim/2,)
@@ -45,9 +45,9 @@ class SinusoidalEmbedding(nn.Module):
         angles = pos * inv_freq # shape: (seq_len, embed_dim/2)
 
         # Apply sin to even indices and cos to odd indices.
-        pe = mx.zeros((seq_len, embed_dim))
-        pe[:, 0::2] = mx.sin(angles) # Even columns
-        pe[:, 1::2] = mx.cos(angles) # Odd columns
+        pe = torch.zeros((seq_len, embed_dim))
+        pe[:, 0::2] = torch.sin(angles) # Even columns
+        pe[:, 1::2] = torch.cos(angles) # Odd columns
 
         # Step 5: Add the batch dimension to get the final shape (1, seq_len, embed_dim).
         pe = pe[None, :, :]
@@ -67,7 +67,7 @@ class SwiGLU(nn.Module):
         # The down projection layer
         self.down_proj = nn.Linear(hidden_dims, dims, bias=False)
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
         # Calculate the gate and the up projection in parallel
         gate = self.gate_proj(x)
         up = self.up_proj(x)
@@ -102,7 +102,7 @@ class MultiHeadAttention(nn.Module):
         # Output projection layer
         self.out_proj = nn.Linear(self.v_dim, embed_dim, bias=False)
 
-    def __call__(self, x: mx.array):
+    def __call__(self, x: torch.Tensor):
         batch_size, seq_len, embed_dim = x.shape
 
         queries = self.q_proj(x)  # Shape: (batch_size, seq_len, qk_dim)
@@ -117,23 +117,23 @@ class MultiHeadAttention(nn.Module):
 
         # Transpose to get shapes ready for attention score calculation.
         # (batch_size, num_heads, seq_len, head_dim)
-        queries = queries.transpose(0, 2, 1, 3)
-        keys = keys.transpose(0, 2, 1, 3)
-        values = values.transpose(0, 2, 1, 3)
+        queries = queries.permute(0, 2, 1, 3)
+        keys = keys.permute(0, 2, 1, 3)
+        values = values.permute(0, 2, 1, 3)
 
         # --- Standard Attention Logic ---
         # (batch_size, num_heads, seq_len, head_dim) @ (batch_size, num_heads, head_dim, seq_len) -> (batch_size, num_heads, seq_len, seq_len)
-        scores = (queries @ keys.transpose(0, 1, 3, 2)) / math.sqrt(self.qk_dim)
+        scores = (queries @ keys.permute(0, 1, 3, 2)) / math.sqrt(self.qk_dim)
         # print(f"Attention scores: {scores[0, 0, :, :]}")  # Print the first head's scores for the first batch
 
-        scores = scores + self.create_causal_mask_triu(seq_len)  # Add causal mask
+        scores = scores + self.create_causal_mask_triu(seq_len, x.device)  # Add causal mask
         # print(f"Attention scores after mask: {scores[0, 0, :, :]}")
 
-        scores = mx.softmax(scores, axis=-1)
+        scores = torch.softmax(scores, axis=-1)
         # print(f"Attention scores after softmax: {scores[0, 0, :, :]}")
         # print(f"Values before attention: {values[0, 0, :, :]}") # Print the first head's values for the first batch
         # print(f"Values shape: {values.shape}")  # Should be (batch_size, num_heads, seq_len, head_dim)
-        output = (scores @ values).transpose(0, 2, 1, 3)
+        output = (scores @ values).permute(0, 2, 1, 3)
         # print(f"Output.shape after attention: {output.shape}")  # Should be (batch_size, seq_len, num_heads, head_dim)
         output = output.reshape(batch_size, seq_len, self.v_dim)
         # print(f"Output before attention reshape: {output[0, :, 0, :]}")  # Print the first head's output for the first batch
@@ -141,35 +141,40 @@ class MultiHeadAttention(nn.Module):
         # print(f"Output shape after attention reshape: {output.shape}")
         return self.out_proj(output)
 
-    def create_causal_mask_triu(self, L: int):
+    def create_causal_mask_triu(self, L: int, device):
         # Create a boolean matrix where the upper triangle (excluding the diagonal) is True
-        mask = mx.triu(mx.ones((L, L)), k=1).astype(mx.bool_)
-        return mx.where(mask, -1e9, 0.0)[None, None, :, :]  # Add batch and head dimensions
+        mask = torch.triu(torch.ones((L, L), device=device), 1) * -1e9
+        return mask[None, None, :, :]  # Add batch and head dimensions
 
 class TransformerBlock(nn.Module):
-    def __init__(self, embed_dim: int, n_head: int, qk_head_dim: int, v_head_dim: int, mlp_dim: int):
+    def __init__(self, embed_dim: int, n_head: int, qk_head_dim: int, v_head_dim: int, mlp_dim: int, dropout_rate: float = 0.1):
         super().__init__()
         self.embed_dim = embed_dim
         self.n_head = n_head
+        self.qk_head_dim = qk_head_dim
+        self.v_head_dim = v_head_dim
         self.mlp_dim = mlp_dim
+        self.dropout_rate = dropout_rate
 
+        self.dropout = nn.Dropout(dropout_rate)
         self.ln1 = nn.LayerNorm(embed_dim)
         self.ln2 = nn.LayerNorm(embed_dim)
         self.mha = MultiHeadAttention(embed_dim, n_head, qk_head_dim, v_head_dim)
         self.ffn = nn.Sequential(
             nn.Linear(embed_dim, mlp_dim),
             nn.GELU(),  # Activation function
+            nn.Dropout(dropout_rate),
             # SwiGLU(mlp_dim, mlp_dim),
             nn.Linear(mlp_dim, embed_dim)
         )
 
-    def __call__(self, x: mx.array):
-        x = x + self.mha(self.ln1(x))
+    def __call__(self, x: torch.Tensor):
+        x = x + self.dropout(self.mha(self.ln1(x)))
         x = x + self.ffn(self.ln2(x))
         return x
 
 class SmallLanguageModel(nn.Module):
-    def __init__(self, vocab_dim: int, embed_dim: int = 512, n_head: int = 8, num_layers: int = 6, qk_head_dim: int = 32, v_head_dim: int = 64, mlp_dim: int = 2048, max_len: int = 512):
+    def __init__(self, vocab_dim: int, embed_dim: int = 512, n_head: int = 8, num_layers: int = 6, qk_head_dim: int = 32, v_head_dim: int = 64, mlp_dim: int = 2048, max_len: int = 512, dropout_rate: float = 0.1):
         super(SmallLanguageModel, self).__init__()
         self.vocab_dim = vocab_dim
         self.embed_dim = embed_dim
@@ -178,6 +183,7 @@ class SmallLanguageModel(nn.Module):
         self.qk_head_dim = qk_head_dim
         self.v_head_dim = v_head_dim
         self.mlp_dim = mlp_dim
+        self.dropout_rate = dropout_rate
         self.max_len = max_len
 
         # self.softmax = nn.Softmax(axis=-1)
@@ -185,7 +191,7 @@ class SmallLanguageModel(nn.Module):
         self.embedding = nn.Embedding(vocab_dim, embed_dim)
         self.pos_embed = SinusoidalEmbedding(embed_dim, max_len)
         self.transformer_blocks = nn.Sequential(
-            *[TransformerBlock(embed_dim, n_head, qk_head_dim, v_head_dim, mlp_dim) for _ in range(num_layers)]
+            *[TransformerBlock(embed_dim, n_head, qk_head_dim, v_head_dim, mlp_dim, dropout_rate) for _ in range(num_layers)]
         )
         self.layer_norm = nn.LayerNorm(embed_dim)
         self.output_proj = nn.Linear(embed_dim, vocab_dim, bias=False)  # Output projection layer
@@ -204,11 +210,33 @@ class SmallLanguageModel(nn.Module):
         # print(f'After output projection, x.shape: {x.shape}')
         return x
 
+    def generate(self, prompt, tokenizer, max_length, eos_token_id=None, temp=1.0):
+        with torch.no_grad():
+            device = next(self.parameters()).device
+            tokens = tokenizer.encode(prompt).ids
+            length = max_length - len(tokens)
+            for _ in range(length):
+                # print(f"Current tokens: {tokens}")
+                input_ids = torch.tensor(tokens, device=device).reshape(1, -1)  # Reshape for batch size of 1
+                logits = self(input_ids)
+                next_token_logits = logits[0, -1, :]  # Get the logits for the last token
+                if temp is None:
+                    next_token_id = torch.argmax(next_token_logits, axis=-1).astype(torch.int32)
+                else:
+                    next_token_logits = next_token_logits / temp
+                    probabilities = torch.softmax(next_token_logits, axis=-1)
+                    next_token_id = torch.multinomial(probabilities, num_samples=1)
+                # print(f"Next token id: {next_token_id}")
+                if eos_token_id is not None and next_token_id == eos_token_id:
+                    break  # Stop if we hit the eos token
+                tokens += next_token_id.tolist()
+        return tokens
+
 def count_parameters(x):
     total_params = 0
     if isinstance(x, dict):
         for key, value in x.items():
-            if isinstance(value, mx.array):
+            if isinstance(value, torch.Tensor):
                 total_params += value.size
             elif isinstance(value, dict):
                 total_params += count_parameters(value)
@@ -217,18 +245,18 @@ def count_parameters(x):
                     total_params += count_parameters(item)
     return total_params
 
-def loss_fn(model: nn.Module, input: mx.array, target: mx.array, pad_token_id: int = None):
+def loss_fn(model: nn.Module, input: torch.Tensor, target: torch.Tensor, pad_token_id: int = None):
     """
     Computes the cross-entropy loss for the model's predictions against the target labels.
 
     Args:
         model (nn.Module): The transformer model.
-        input (mx.array): Input sequence of shape (batch_size, seq_len, embed_dim).
-        target (mx.array): Target sequence of shape (batch_size, seq_len).
+        input (torch.Tensor): Input sequence of shape (batch_size, seq_len, embed_dim).
+        target (torch.Tensor): Target sequence of shape (batch_size, seq_len).
         pad_token_id (int): The ID of the padding token.
 
     Returns:
-        mx.array: The computed loss.
+        torch.Tensor: The computed loss.
     """
     # Create mask to prevent attention to future tokens
     logits = model(input)
@@ -241,48 +269,26 @@ def loss_fn(model: nn.Module, input: mx.array, target: mx.array, pad_token_id: i
 
     if pad_token_id is not None:
         # Create a mask to ignore padding tokens in the loss calculation
-        loss = nn.losses.cross_entropy(logits, target, reduction='none')
-        mask = (target != pad_token_id)
-        loss = (loss * mask).sum() / mx.sum(mask)
+        loss = nn.CrossEntropyLoss(reduction='mean', ignore_index=pad_token_id)(logits, target)
+        # print(f"Unmasked loss shape: {loss.shape}")  # Debugging: Check unmasked loss shape
+        # mask = (target != pad_token_id)
+        # loss = (loss * mask).sum() / torch.sum(mask)
     else:
     # Compute the cross-entropy loss including padded tokens
-        loss = nn.losses.cross_entropy(logits, target, reduction='mean')
+        loss = nn.CrossEntropyLoss(reduction='mean')(logits, target)
 
     return loss
 
-def generate_story(model, tokenizer, prompt, max_length, eos_token_id=None, temp=None):
+def print_story(tokens, tokenizer):
     '''
     Generates a story using the model and tokenizer based on the provided prompt.
     '''
-    # print(f"Generating story with prompt: {prompt}")
-    model.eval()  # Set the model to evaluation mode
-    tokens = tokenizer.encode(prompt).ids
-    input_ids = mx.array(tokens).reshape(1, -1)  # Reshape for batch size of 1
-
-    for i in range(max_length-len(tokens)):
-        logits = model(input_ids)
-        next_token_logits = logits[:, -1, :]  # Get the logits for the last token
-        if temp is None:
-            next_token_id = mx.argmax(next_token_logits, axis=-1).astype(mx.int32)
-        else:
-            next_token_logits = next_token_logits / temp
-            next_token_id = mx.random.categorical(next_token_logits, num_samples=1).astype(mx.int32)[0]
-        # print(f"Next token ID: {next_token_id} with shape {next_token_id.shape}")
-        # print(tokenizer.decode(next_token_id.tolist()), end='', flush=True)
-        # if (i+1) % 50 == 0:
-        #     print()
-
-        if eos_token_id is not None and next_token_id == eos_token_id:
-            break  # Stop if we hit the eos token
-
-        # print(input_ids.shape, next_token_id.reshape(1, 1).shape)
-        input_ids = mx.concat([input_ids, next_token_id.reshape(1, 1)], axis=1)  # Append the new token
-    story = tokenizer.decode(input_ids[0].tolist())
-    # print a new line after every 30 words in story
+    story = tokenizer.decode(tokens)
+    # print a new line after every 25 tokens in story
     words = story.split()
-    for i in range(0, len(words), 30):
-        print(' '.join(words[i:i+30]), end=' ')
-        if (i + 30) % 30 == 0:
+    for i in range(0, len(words), 25):
+        print(' '.join(words[i:i+25]), end=' ')
+        if (i + 25) % 25 == 0:
             print()
     print()  # Print a newline at the end of the story
     print('-' * 20)

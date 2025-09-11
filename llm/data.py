@@ -79,6 +79,7 @@ def chunk_story(text, tokenizer, sos_token, eos_token, context_len, unfinished_c
 
     # Tokenize the story
     story_tokens = tokenizer.encode(text).ids
+    count = len(story_tokens)
 
     if padding:
         tokens = [sos_token_id]  # Start with SOS token
@@ -154,7 +155,7 @@ def chunk_story(text, tokenizer, sos_token, eos_token, context_len, unfinished_c
         else:
             unfinished_chunk = None
 
-    return chunks, unfinished_chunk
+    return chunks, unfinished_chunk, count
 
 def pack_stories(lists, max_len, padding_id):
     """
