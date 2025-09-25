@@ -1,0 +1,9 @@
+Sample limit: 200,000
+Vocabulary Size: 512
+Context length: 512
+Number of chunks: 123,633
+Number of tokens: 63,300,096
+Number of non-special tokens: 52,560,398
+Number of special tokens: 10,739,698
+Padding used: True
+Packing used: True
